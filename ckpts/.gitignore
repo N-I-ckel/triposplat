@@ -1,0 +1,3 @@
+# Model checkpoints are downloaded from Hugging Face at setup/runtime.
+*
+!.gitignore
