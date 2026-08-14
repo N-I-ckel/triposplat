@@ -2,7 +2,7 @@
 TripoSplat converts a single 2D image into high-quality and variable number of 3D Gaussians, developed by [TripoAI](https://www.tripo3d.ai/). It can serve as a powerful pipeline tool for asset creation, AR/VR, game development, simulation environments, and beyond. This is the inference-only repo for TripoSplat. For the training code, see [TripoSplat-Training](https://github.com/runjie-yan/TripoSplat-Training).
 
 <a href="https://arxiv.org/abs/2605.16355"><img src="https://img.shields.io/badge/Read%20Paper-B31B1B?style=for-the-badge&logo=arxiv" alt="Paper"></a>
-<a href="https://www.tripo3d.ai/research/triposplat"><img src="https://img.shields.io/badge/Technical%20Blog-grey?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iNjUiIGhlaWdodD0iNjUiIHZpZXdCb3g9IjAgMCA2NSA2NSIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTkuNDk5MSA5LjYzNDc3TDE2LjQzNzQgMjEuNDU1NkMxNi40MzkzIDIxLjQ1ODkgMTYuNDQxMiAyMS40NjIyIDE2LjQ0MzEgMjEuNDY1NUwzMC4yNjU4IDQ1LjA1NDhDMzEuNTMyNyA0Ny4yMTY3IDM0LjcwNDUgNDcuMjE2NyAzNS45NzE0IDQ1LjA1NDhMNDkuMzg2MiAyMi4xNjE2SDU5LjQ2MThMNDEuMjY2IDUzLjE2MkMzNy42NDQ5IDU5LjMzMTMgMjguNTkyMyA1OS4zMzEzIDI0Ljk3MTIgNTMuMTYyTDYuNjM5NjcgMjEuOTMwMkM0LjAyNCAxNy40NzM5IDUuNjU5NTYgMTIuMjEyNyA5LjQ5OTEgOS42MzQ3N1oiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0yMC4xMTIxIDE2LjYwODdIMzQuNjkyNkwyOC42MjIgMjcuMDQ0MkMyOC4yMDMzIDI3Ljc2NCAyOC4yMDgzIDI4LjY0OTIgMjguNjM1MSAyOS4zNjQ0TDMxLjA1MjcgMzMuNDE1MUMzMS45NjU0IDM0Ljk0NDUgMzQuMjE2MyAzNC45MzY1IDM1LjExNzggMzMuNDAwNkw0NC45NzM5IDE2LjYwODdINDYuOTQyTDQ2Ljk0NTUgMTYuNjA4N0g2MC44NDQ2QzYwLjQ4MzIgMTIuMDU4NyA1Ni42NzMxIDguMDQ4ODMgNTEuNDUwOSA4LjA0ODgzTDE1LjA4NzkgOC4wNDg4M0wyMC4xMTIxIDE2LjYwODdaIiBmaWxsPSIjRjhDRjAwIi8+Cjwvc3ZnPgo=" alt="Technical Blog"></a>
+<a href="https://www.tripo3d.ai/research/triposplat"><img src="https://img.shields.io/badge/Technical%20Blog-grey" alt="Technical Blog"></a>
 <a href="https://huggingface.co/spaces/VAST-AI/TripoSplat"><img src="https://img.shields.io/badge/Huggingface%20Demo-grey?style=for-the-badge&logo=huggingface" alt="HuggingFace Demo"></a>
 
 | ![](static/doc/001.webp) | ![](static/doc/002.webp) |
@@ -15,6 +15,7 @@ TripoSplat converts a single 2D image into high-quality and variable number of 3
 - **Minimal, readable code**: two files (`triposplat.py` and `model.py`), ~2,000 LOC total. Easy to customize and integrate into other ecosystems.
 - **Near-zero dependencies**: no `transformers`, no `diffusers`, no version-conflict hell. Runs on any platform.
 - **Official ComfyUI support**: drop the [official workflow template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_triposplat_image_to_gaussian_splat.json) into ComfyUI and start playing with TripoSplat right away.
+- **Apple Silicon hybrid path (this fork)**: MLX for DINOv3 / Flux2-VAE / flow matching, PyTorch MPS only for BiRefNet and the dynamic Octree Gaussian decoder.
 
 ## Quickstart
 Download model weights to `ckpts/` from [HuggingFace](https://huggingface.co/VAST-AI/TripoSplat). 
@@ -50,6 +51,33 @@ The exported `.ply` / `.splat` files can be visualized in any 3D Gaussian
 viewer — e.g. [SparkJS](https://sparkjs.dev) or
 [SuperSplat](https://superspl.at/editor).
 
+## Apple Silicon: MLX + MPS
+
+This fork contains a lean hybrid path for Apple Silicon that avoids loading a full PyTorch copy of DINOv3, Flux2-VAE and the flow transformer alongside their MLX copies.
+
+```bash
+# Installs the pinned MLX port without its unrelated FLUX/web dependencies,
+# then downloads mlx-community/tripo_splat_mlx into the official ckpts layout.
+bash scripts/setup_mlx.sh
+
+# Image -> Gaussian Splat
+python run_mlx.py input.png -o output.splat
+
+# Or export PLY and tune the generation budget.
+python run_mlx.py input.png -o output.ply --steps 20 --guidance 3 --gaussians 262144
+```
+
+The pipeline is stage-wise to reduce unified-memory pressure:
+
+```text
+BiRefNet (MPS)
+  -> DINOv3 + Flux2-VAE (MLX)
+  -> LatentSeqMMFlowModel (MLX)
+  -> OctreeGaussianDecoder (MPS)
+  -> .splat / .ply
+```
+
+See [`APPLE_MLX.md`](APPLE_MLX.md) for architecture, the Sobol positional-parity fix, setup details, and the mixed checkpoint-license boundary. The downloaded weights are kept under `ckpts/` and are not tracked by Git.
 
 ## Gradio Demo
 
@@ -59,7 +87,9 @@ python run_gradio.py
 ```
 
 ## License
-TripoSplat code and weight models are released under the [MIT License](https://github.com/VAST-AI-Research/TripoSplat/blob/main/LICENSE).
+TripoSplat code and the official TripoSplat weights are released under the [MIT License](https://github.com/VAST-AI-Research/TripoSplat/blob/main/LICENSE).
+
+The optional `mlx-community/tripo_splat_mlx` download used by the Apple-Silicon helper is a mixed-license bundle. In particular, its model card identifies the bundled Flux2 VAE checkpoint as non-commercial and DINOv3 as carrying separate redistribution terms. See [`APPLE_MLX.md`](APPLE_MLX.md) before redistributing or deploying those downloaded checkpoints.
 
 ## Citation
 If you find TripoSplat useful, please cite:
